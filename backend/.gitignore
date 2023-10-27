@@ -1,1 +1,4 @@
+__pycache__
+fly.toml
+venv
 .env-production
