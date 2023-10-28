@@ -1,9 +1,10 @@
 import json
-
 from collections import defaultdict
 from datetime import datetime
 from math import floor
-from urllib.request import urlopen
+import requests
+
+from requests_cache import CachedSession
 
 from .model import BusStop, Departure
 
@@ -12,13 +13,16 @@ class PublicTransportClient(object):
     def __init__(self, api_key, timezone):
         self.api_key = api_key
         self.timezone = timezone
+        self.session = CachedSession(
+            "sl_api_cache", ignored_parameters=["key"], expire_after=60
+        )
 
     def _fetch_bus_departures(self, bus_stop, time_window=45):
         url = "https://api.sl.se/api2/realtimedeparturesV4.json?key={}&siteid={}&timewindow={}".format(
             self.api_key, bus_stop.site_id, time_window
         )
-        response = urlopen(url)
-        data_json = json.loads(response.read())
+        response = self.session.get(url)
+        data_json = response.json()
         departures = data_json.get("ResponseData", {}).get("Buses", [])
 
         return departures
@@ -51,10 +55,8 @@ class PublicTransportClient(object):
                 or expected_date_time_raw is None
             ):
                 continue
-            
-            if (
-                (int(line_number), int(journey_direction)) not in buses_to_include
-            ):
+
+            if (int(line_number), int(journey_direction)) not in buses_to_include:
                 continue
 
             if expected_date_time_raw is not None:
@@ -81,7 +83,7 @@ class PublicTransportClient(object):
                 )
 
         filtered_departures = []
-        occurences = defaultdict(int)        
+        occurences = defaultdict(int)
 
         all_departures.sort(key=lambda d: d.expected)
         for departure in all_departures:
