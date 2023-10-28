@@ -69,10 +69,7 @@ class PublicTransportClient(object):
                 expected_formatted = ""
                 if time_until_minutes <= bus_stop.time_to_walk_minutes:
                     continue
-                if time_until_minutes > 15:
-                    expected_formatted = expected_date_time.strftime("%H:%M")
-                else:
-                    expected_formatted = str(time_until_minutes)
+                expected_formatted = str(time_until_minutes)
 
                 all_departures.append(
                     Departure(

@@ -1,56 +1,74 @@
 import os
 import pytz
+from collections import defaultdict
 
 from PIL import Image, ImageDraw, ImageFont
 
 
 from sources.public_transport.client import PublicTransportClient
 from config import BUS_STOPS
+from utils.logging import create_stdout_logger
 
 
-def main(sl_api_key):
-    timezone = pytz.timezone("Europe/Stockholm")
+def main(sl_api_key, timezone=pytz.timezone("Europe/Stockholm")):
+    logger = create_stdout_logger("server")
+
+    logger.info("Using timezone %s", timezone)
+
+    logger.info("Creating client for SL traffic API")
     client = PublicTransportClient(api_key=sl_api_key, timezone=timezone)
+    logger.info("Finished setting up client for SL traffic API")
 
+    departures_by_bus_stop = get_departures_by_bus_stop(logger, client, BUS_STOPS)
+
+    render_output_image(logger, departures_by_bus_stop=departures_by_bus_stop)
+
+
+def get_departures_by_bus_stop(logger, client, bus_stops):
+    departures_by_bus_stop = []
+    for bus_stop in BUS_STOPS:
+        logger.info(
+            "Getting all departures from bus stop %s (%s)",
+            bus_stop.name,
+            bus_stop.site_id,
+        )
+        departures = client.get_bus_departures(bus_stop=bus_stop)
+        logger.info("Got %d departures", len(departures))
+        for departure in departures:
+            departures_by_bus_stop.append((bus_stop, departure))
+    return departures_by_bus_stop
+
+
+def render_output_image(logger, departures_by_bus_stop):
+    logger.info("Construction rows of bus departures to render")
     rows = []
 
-    for bus_stop in BUS_STOPS:
-        departures = client.get_bus_departures(bus_stop=bus_stop)
-        for departure in departures:
-            rows.append(
-                (
-                    bus_stop.abbreviated_name,
-                    departure.line_number,
-                    departure.destination,
-                    departure.expected_formatted,
-                )
-            )
-        rows.append(())
-    
-    print(rows)
+    current_bus_stop = departures_by_bus_stop[0][0]
+    for bus_stop, departure in departures_by_bus_stop:
+        if current_bus_stop != bus_stop:
+            rows.append(())
+            current_bus_stop = bus_stop
 
-    # rows = [
-    #     ("E", "66", "Reimersholme", "11"),
-    #     ("E", "2", "Norrtull", "21:49"),
-    #     ("E", "2", "Norrtull", "22:04"),
-    #     (),
-    #     ("ES", "53", "Karolinska institutet", "7"),
-    #     ("ES", "71", "Jarlaberg", "21:49"),
-    #     ("ES", "53", "Karolinska institutet", "22:11"),
-    #     (),
-    #     ("Å", "3", "Karolinska institutet", "21:49"),
-    #     ("Å", "76", "Ropsten", "21:52"),
-    #     ("Å", "3", "Karolinska institutet", "22:04"),
-    #     ("Å", "76", "Ropsten", "22:12"),
-    # ]
+        rows.append(
+            (
+                bus_stop.abbreviated_name,
+                departure.line_number,
+                departure.destination,
+                departure.expected_formatted,
+            )
+        )
+
+    print(rows)
 
     width = 800
     height = 600
+    logger.info("Starting rendering of output image (%d x %d)", width, height)
+
     img = Image.new("RGB", (width, height), color="white")
 
     draw = ImageDraw.Draw(img)
 
-    font_size = 40
+    font_size = 30
     regular_font = ImageFont.truetype("fonts/CamingoCode-Regular.ttf", font_size)
     bold_font = ImageFont.truetype("fonts/CamingoCode-Bold.ttf", font_size)
     italic_font = ImageFont.truetype("fonts/CamingoCode-Italic.ttf", font_size)
