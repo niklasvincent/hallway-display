@@ -1,0 +1,14 @@
+# Ignore by default
+*
+
+# Exceptions:
+!fonts
+!sources
+!utils
+!config.py
+!hallway-display.conf
+!requirements.txt
+!server.py
+!start_server.sh
+!supervisor.conf
+!wsgi.py

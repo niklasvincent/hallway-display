@@ -1,3 +1,4 @@
+from datetime import datetime
 from functools import wraps
 from io import BytesIO
 
@@ -6,6 +7,7 @@ from flask import Flask, jsonify, request, send_file
 from flask_api import status
 from PIL import Image, ImageDraw, ImageFont
 
+from sources.openweather.client import OpenweatherClient
 from sources.public_transport.client import PublicTransportClient
 from config import BUS_STOPS
 from utils.config import Config
@@ -21,10 +23,23 @@ def create_app():
     logger.info("Using timezone %s", timezone)
 
     logger.info("Creating client for SL traffic API")
-    client = PublicTransportClient(api_key=config.get("sl_api_key"), timezone=timezone)
+    sl_client = PublicTransportClient(
+        api_key=config.get("sl_api_key"), timezone=timezone
+    )
     logger.info("Finished setting up client for SL traffic API")
 
-    server = Server(logger=logger, client=client)
+    logger.info("Creating client for Openweather API")
+    openweather_client = OpenweatherClient(
+        logger=logger, api_key=config.get("openweather_api_key")
+    )
+    logger.info("Finished setting up client for Openweather API")
+
+    server = Server(
+        logger=logger,
+        config=config,
+        sl_client=sl_client,
+        openweather_client=openweather_client,
+    )
 
     app = Flask(__name__, instance_relative_config=True)
 
@@ -75,13 +90,19 @@ def create_app():
 
 
 class Server(object):
-    def __init__(self, logger, client):
+    def __init__(self, logger, config, sl_client, openweather_client):
         self.logger = logger
-        self.client = client
+        self.config = config
+        self.sl_client = sl_client
+        self.openweather_client = openweather_client
 
     def get_next_frame(self):
         departures_by_bus_stop = self._get_departures_by_bus_stop(BUS_STOPS)
-        return self._render_output_image(departures_by_bus_stop=departures_by_bus_stop)
+        lat, lon = self.config.get("home_coordinates").split(",")
+        weather_data = self.openweather_client.get_current_weather(lat=lat, lon=lon)
+        return self._render_output_image(
+            departures_by_bus_stop=departures_by_bus_stop, weather_data=weather_data
+        )
 
     def _get_departures_by_bus_stop(self, bus_stops):
         departures_by_bus_stop = []
@@ -91,13 +112,13 @@ class Server(object):
                 bus_stop.name,
                 bus_stop.site_id,
             )
-            departures = self.client.get_bus_departures(bus_stop=bus_stop)
+            departures = self.sl_client.get_bus_departures(bus_stop=bus_stop)
             self.logger.info("Got %d departures", len(departures))
             for departure in departures:
                 departures_by_bus_stop.append((bus_stop, departure))
         return departures_by_bus_stop
 
-    def _render_output_image(self, departures_by_bus_stop):
+    def _render_output_image(self, departures_by_bus_stop, weather_data):
         self.logger.info("Construction rows of bus departures to render")
         rows = []
 
@@ -169,5 +190,31 @@ class Server(object):
                 y_offset += font_size
 
             x_offset = 5
+
+        # Extract and display forecast data for the next 5 days
+        for entry in weather_data["list"]:
+            timestamp = entry["dt"]
+            date_time = datetime.fromtimestamp(timestamp)
+            icon = Image.open(self.openweather_client.get_weather_icon(entry["weather"][0]["icon"]))
+
+            # Calculate the x-coordinate based on the date
+            x_coordinate = (date_time.day - datetime.now().day) * 120
+
+            # Paste the icon on the image
+            img.paste(icon, (x_coordinate, 400))
+
+            # Draw temperature and date on the image
+            draw.text(
+                (x_coordinate, 430),
+                f"{date_time.strftime('%H:%M')}",
+                fill="black",
+                font=font,
+            )
+            draw.text(
+                (x_coordinate, 470),
+                f"{entry['main']['temp']}°C",
+                fill="black",
+                font=font,
+            )
 
         return img

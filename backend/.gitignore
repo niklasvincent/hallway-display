@@ -2,4 +2,4 @@ __pycache__
 fly.toml
 venv
 .env-production
-sl_api_cache.sqlite
+*_cache.sqlite

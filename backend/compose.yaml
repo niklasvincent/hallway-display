@@ -1,0 +1,8 @@
+services:
+  hallway-display:
+    build: .
+    image: hallway-display
+    env_file:
+      - .env-production
+    ports:
+      - "4999:4999"
