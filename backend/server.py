@@ -23,9 +23,7 @@ def create_app():
     logger.info("Using timezone %s", timezone)
 
     logger.info("Creating client for SL traffic API")
-    sl_client = PublicTransportClient(
-        api_key=config.get("sl_api_key"), timezone=timezone
-    )
+    sl_client = PublicTransportClient(api_key=config.get("sl_api_key"))
     logger.info("Finished setting up client for SL traffic API")
 
     logger.info("Creating client for Openweather API")
@@ -37,6 +35,7 @@ def create_app():
     server = Server(
         logger=logger,
         config=config,
+        timezone=timezone,
         sl_client=sl_client,
         openweather_client=openweather_client,
     )
@@ -65,7 +64,7 @@ def create_app():
 
     def serve_pil_image(pil_img):
         img_io = BytesIO()
-        pil_img.save(img_io, "PNG")
+        pil_img.save(img_io, "PNG", dpi=(212, 212))
         img_io.seek(0)
         return send_file(img_io, mimetype="image/png")
 
@@ -74,6 +73,13 @@ def create_app():
     def render_next_frame():
         img = server.get_next_frame()
         return serve_pil_image(img)
+
+    @app.route("/health-check", methods=["GET"])
+    def health_check():
+        return (
+            jsonify(message="Success"),
+            status.HTTP_200_OK,
+        )
 
     @app.errorhandler(404)
     def endpoint_not_found(e):
@@ -90,21 +96,27 @@ def create_app():
 
 
 class Server(object):
-    def __init__(self, logger, config, sl_client, openweather_client):
+    def __init__(self, logger, config, timezone, sl_client, openweather_client):
         self.logger = logger
         self.config = config
+        self.timezone = timezone
         self.sl_client = sl_client
         self.openweather_client = openweather_client
 
     def get_next_frame(self):
-        departures_by_bus_stop = self._get_departures_by_bus_stop(BUS_STOPS)
+        current_time = datetime.now(self.timezone)
+        departures_by_bus_stop = self._get_departures_by_bus_stop(
+            current_time, BUS_STOPS
+        )
         lat, lon = self.config.get("home_coordinates").split(",")
         weather_data = self.openweather_client.get_current_weather(lat=lat, lon=lon)
         return self._render_output_image(
-            departures_by_bus_stop=departures_by_bus_stop, weather_data=weather_data
+            current_time=current_time,
+            departures_by_bus_stop=departures_by_bus_stop,
+            weather_data=weather_data,
         )
 
-    def _get_departures_by_bus_stop(self, bus_stops):
+    def _get_departures_by_bus_stop(self, current_time, bus_stops):
         departures_by_bus_stop = []
         for bus_stop in bus_stops:
             self.logger.info(
@@ -112,13 +124,15 @@ class Server(object):
                 bus_stop.name,
                 bus_stop.site_id,
             )
-            departures = self.sl_client.get_bus_departures(bus_stop=bus_stop)
+            departures = self.sl_client.get_bus_departures(
+                current_time=current_time, bus_stop=bus_stop
+            )
             self.logger.info("Got %d departures", len(departures))
             for departure in departures:
                 departures_by_bus_stop.append((bus_stop, departure))
         return departures_by_bus_stop
 
-    def _render_output_image(self, departures_by_bus_stop, weather_data):
+    def _render_output_image(self, current_time, departures_by_bus_stop, weather_data):
         self.logger.info("Construction rows of bus departures to render")
         rows = []
 
@@ -139,23 +153,24 @@ class Server(object):
 
         rows.append("-")
 
-        width = 800
-        height = 600
-        self.logger.info("Starting rendering of output image (%d x %d)", width, height)
+        self.logger.info("Constructed %d rows of bus departures to render", len(rows))
 
-        img = Image.new("RGB", (width, height), color="white")
+        x_res = 1024
+        y_res = 768
+        self.logger.info("Starting rendering of output image (%d x %d)", x_res, y_res)
+
+        img = Image.new("RGB", (x_res, y_res), color="white")
 
         draw = ImageDraw.Draw(img)
 
-        font_size = 30
-        regular_font = ImageFont.truetype("fonts/CamingoCode-Regular.ttf", font_size)
-        bold_font = ImageFont.truetype("fonts/CamingoCode-Bold.ttf", font_size)
-        italic_font = ImageFont.truetype("fonts/CamingoCode-Italic.ttf", font_size)
+        font_size = 20 if len(rows) <= 13 else 15
+        regular_font = ImageFont.truetype("fonts/FragmentMono-Regular.ttf", font_size)
+        italic_font = ImageFont.truetype("fonts/FragmentMono-Italic.ttf", font_size)
 
-        left_padding = 20
+        right_padding = 600
         spacing = 20
         x_offsets = [5, 80, 160]
-        fonts = [regular_font, bold_font, regular_font, italic_font]
+        fonts = [regular_font, regular_font, regular_font, italic_font]
         x_offset = x_offsets[0]
         y_offset = 0
 
@@ -163,7 +178,12 @@ class Server(object):
             for i, text in enumerate(row):
                 font = fonts[i]
                 if i == len(row) - 1:
-                    x_offset = width - draw.textlength(text, font=font) - left_padding
+                    x_offset = (
+                        x_res
+                        - draw.textlength(text, font=font)
+                        - right_padding
+                        - spacing / 2
+                    )
                 else:
                     x_offset = x_offsets[i]
 
@@ -179,11 +199,11 @@ class Server(object):
                     (
                         0,
                         y_offset_line,
-                        width,
+                        x_res - right_padding,
                         y_offset_line,
                     ),
-                    fill=(0, 0, 0),
-                    width=2,
+                    fill=(125, 125, 125),
+                    width=1,
                 )
                 y_offset += font_size / 2
             else:
@@ -191,30 +211,61 @@ class Server(object):
 
             x_offset = 5
 
+        draw.line(
+            (
+                x_res - right_padding,
+                0,
+                x_res - right_padding,
+                y_offset,
+            ),
+            fill=(125, 125, 125),
+            width=1,
+        )
+
+        # Current time and week
+        week_number = "Week {}".format(current_time.isocalendar().week)
+        current_time_formatted = current_time.strftime("%H:%M")
+        draw.text(
+            xy=(450, 0),
+            text=current_time_formatted,
+            fill=(0, 0, 0),
+            font=font,
+        )
+        draw.text(
+            xy=(450, font_size),
+            text=week_number,
+            fill=(0, 0, 0),
+            font=font,
+        )
+
         # Extract and display forecast data for the next 5 days
-        for entry in weather_data["list"]:
-            timestamp = entry["dt"]
-            date_time = datetime.fromtimestamp(timestamp)
-            icon = Image.open(self.openweather_client.get_weather_icon(entry["weather"][0]["icon"]))
+        # for entry in weather_data["list"]:
+        #     timestamp = entry["dt"]
+        #     date_time = datetime.fromtimestamp(timestamp)
+        #     icon = Image.open(
+        #         self.openweather_client.get_weather_icon(entry["weather"][0]["icon"])
+        #     )
 
-            # Calculate the x-coordinate based on the date
-            x_coordinate = (date_time.day - datetime.now().day) * 120
+        #     # Calculate the x-coordinate based on the date
+        #     x_coordinate = (date_time.day - datetime.now().day) * 120
 
-            # Paste the icon on the image
-            img.paste(icon, (x_coordinate, 400))
+        #     # Paste the icon on the image
+        #     img.paste(icon, (x_coordinate, 400))
 
-            # Draw temperature and date on the image
-            draw.text(
-                (x_coordinate, 430),
-                f"{date_time.strftime('%H:%M')}",
-                fill="black",
-                font=font,
-            )
-            draw.text(
-                (x_coordinate, 470),
-                f"{entry['main']['temp']}°C",
-                fill="black",
-                font=font,
-            )
+        #     # Draw temperature and date on the image
+        #     draw.text(
+        #         (x_coordinate, 430),
+        #         f"{date_time.strftime('%H:%M')}",
+        #         fill="black",
+        #         font=font,
+        #     )
+        #     draw.text(
+        #         (x_coordinate, 470),
+        #         f"{entry['main']['temp']}°C",
+        #         fill="black",
+        #         font=font,
+        #     )
+
+        img = img.transpose(Image.ROTATE_90)
 
         return img

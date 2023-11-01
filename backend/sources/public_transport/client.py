@@ -10,9 +10,8 @@ from .model import BusStop, Departure
 
 
 class PublicTransportClient(object):
-    def __init__(self, api_key, timezone):
+    def __init__(self, api_key):
         self.api_key = api_key
-        self.timezone = timezone
         self.session = CachedSession(
             "sl_api_cache", ignored_parameters=["key"], expire_after=60
         )
@@ -22,16 +21,22 @@ class PublicTransportClient(object):
             self.api_key, bus_stop.site_id, time_window
         )
         response = self.session.get(url)
-        data_json = response.json()
-        departures = data_json.get("ResponseData", {}).get("Buses", [])
 
-        return departures
+        if response.status_code == 200:
+            data = response.json()
+            return data.get("ResponseData", {}).get("Buses", [])
+        else:
+            self.logger.error("Got response code %s from SL API", response.status_code)
+            raise Exception(
+                "Could not fetch departures from SL for bus stop {}".format(
+                    bus_stop.site_id
+                )
+            )
 
-    def get_bus_departures(self, bus_stop, time_window=45):
+    def get_bus_departures(self, current_time, bus_stop, time_window=45):
         departures = self._fetch_bus_departures(
             bus_stop=bus_stop, time_window=time_window
         )
-        current_time = datetime.now(self.timezone)
 
         buses_to_include = set(
             [
@@ -56,22 +61,25 @@ class PublicTransportClient(object):
             ):
                 continue
 
-            if (int(line_number), int(journey_direction)) not in buses_to_include:
+            if (str(line_number), int(journey_direction)) not in buses_to_include:
                 continue
 
             if expected_date_time_raw is not None:
                 expected_date_time = datetime.strptime(
                     expected_date_time_raw, "%Y-%m-%dT%H:%M:%S"
                 )
-                # From <https://stackoverflow.com/a/796019>
-                time_until_minutes = floor(
-                    (expected_date_time - current_time.replace(tzinfo=None)).seconds
-                    / 60
+                expected_time_delta = expected_date_time - current_time.replace(
+                    tzinfo=None
                 )
+                # From <https://stackoverflow.com/a/796019>
+                time_until_minutes = floor(expected_time_delta.seconds / 60)
                 expected_formatted = ""
-                if time_until_minutes <= bus_stop.time_to_walk_minutes:
+                if time_until_minutes >= 15:
+                    expected_formatted = expected_date_time.strftime("%H:%M")
+                else:
+                    expected_formatted = str(time_until_minutes)
+                if time_until_minutes < bus_stop.time_to_walk_minutes:
                     continue
-                expected_formatted = str(time_until_minutes)
 
                 all_departures.append(
                     Departure(

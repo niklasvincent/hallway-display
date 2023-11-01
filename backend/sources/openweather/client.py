@@ -31,6 +31,7 @@ class OpenweatherClient(object):
             self.logger.error(
                 "Got response code %s from Openweather API", response.status_code
             )
+            raise Exception("Could not fetch weather data from Openweather API")
 
         return None
 
